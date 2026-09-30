@@ -1,0 +1,14 @@
+{
+  "name": "flight-sim-online",
+  "version": "1.0.0",
+  "description": "Online team-battle flight simulator (server-authoritative, WebSocket)",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js",
+    "test": "node server/test/combat.js && node server/test/smoke.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": { "three": "0.128.0", "ws": "^8.18.0" },
+  "license": "MIT"
+}
