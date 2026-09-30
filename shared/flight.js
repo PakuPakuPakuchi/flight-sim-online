@@ -2,8 +2,9 @@
    サーバー(権威)とクライアント(予測)で同一コードを使用する。 */
 (function(root,factory){if(typeof module==="object"&&module.exports)module.exports=factory(require("three"),require("./world.js"));else root.Flight=factory(root.THREE,root.World)})(typeof self!=="undefined"?self:this,function(T,World){
 const V3=T.Vector3,Q=T.Quaternion,clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),ramp=(v,t,r,dt)=>v+clamp(t-v,-r*dt,r*dt),Hg=World.Hg;
+const CLIMB_STALL_BONUS=.07; // 上昇中(垂直速度>0)のみ失速迎角を加算(rad)。12m/sで最大
 const STALL_A0=.34; // 失速迎角(rad) 大きいほど失速しにくい
-function CLf(a,fl){const aS=STALL_A0+.02*fl,cl0=.25+.5*fl,lin=cl0+5.2*clamp(a,-aS,aS),ex=Math.abs(a)-aS;if(ex<=0)return lin;const t=Math.min(1,ex/.35);return lin*(1-t)+.9*Math.sin(2*a)*t}
+function CLf(a,fl,ab=0){const aS=STALL_A0+.02*fl+ab,cl0=.25+.5*fl,lin=cl0+5.2*clamp(a,-aS,aS),ex=Math.abs(a)-aS;if(ex<=0)return lin;const t=Math.min(1,ex/.35);return lin*(1-t)+.9*Math.sin(2*a)*t}
 const P=(x,y,z,t,k,c,mu=.7)=>({p:new V3(x,y,z),t,k,c,mu});
 const pts=[P(0,-1.2,-1.65,'n',60000,8000),P(-1.25,-1.2,.35,'m',65000,8000),P(1.25,-1.2,.35,'m',65000,8000),P(0,-.62,-.5,'b',120000,15000,.6),P(0,-.62,1.6,'b',120000,15000,.6),
  P(-5.5,-.1,-.2,'h',120000,15000),P(5.5,-.1,-.2,'h',120000,15000),P(0,.3,3.7,'h',120000,15000),P(0,0,-3.3,'h',120000,15000)];
@@ -13,14 +14,14 @@ function physics(S,dt){
  if(S.crashed)return;S.t+=dt;
  const inv=S.q.clone().invert(),vb=S.vel.clone().applyQuaternion(inv),V=Math.max(vb.length(),.001),rho=1.225*Math.exp(-Math.max(0,S.pos.y)/8500),qd=.5*rho*V*V;
  const alpha=V>2?Math.atan2(-vb.y,-vb.z):0,beta=V>2?Math.asin(clamp(vb.x/V,-1,1)):0;S.alpha=alpha;S.V=V;
- const fl=S.flaps,CL=CLf(alpha,fl),aS=STALL_A0+.02*fl,CD=.03+.06*CL*CL+.04*fl+.02*S.gearT+1.1*Math.sin(alpha)**2,vh=vb.clone().divideScalar(V);
+ const fl=S.flaps,clm=clamp(S.vel.y/12,0,1),aS=STALL_A0+.02*fl+CLIMB_STALL_BONUS*clm,CL=CLf(alpha,fl,CLIMB_STALL_BONUS*clm),CD=.03+.06*CL*CL+.04*fl+.02*S.gearT+1.1*Math.sin(alpha)**2,vh=vb.clone().divideScalar(V);
  const F=new V3().crossVectors(X,vh).multiplyScalar(qd*16*CL);F.addScaledVector(vh,-qd*16*CD);F.x-=beta*qd*16*.9;
  // engine
  let Tn=0;if(S.fuel>0){const dens=rho/1.225;Tn=Math.min(4200*S.thr*dens,.78*170000*S.thr*Math.pow(dens,.9)/Math.max(V,12));S.fuel=Math.max(0,S.fuel-(.05+.95*S.thr)*.00045*dt)}
  F.z-=Tn;
  // moments (rad/s^2, body axes)
  const eff=Math.min(2,qd/1531),el=S.el+S.trim,r=-S.w.z,yw=-S.w.y,st=clamp((alpha-aS)/.16,0,1);
- let ax=eff*3.0*el-4.2*alpha*eff-(.8+1.6*Math.min(eff,1.5))*S.w.x-st*1.6*Math.max(.3,eff);
+ let ax=eff*3.0*el-4.2*alpha*eff-(.8+1.6*Math.min(eff,1.5))*S.w.x-st*1.6*Math.max(.3,eff)*(1-.4*clm);
  let ra=eff*3.2*S.ai-r*(2.4+1.0*Math.min(eff,1.5))-beta*1.2*eff+st*1.1*Math.sin(S.t*2.3);
  let yr=eff*1.5*S.ru+beta*2.6*eff-yw*(1.6+.8*Math.min(eff,1.5))-S.ai*.35*eff;
  // ground
