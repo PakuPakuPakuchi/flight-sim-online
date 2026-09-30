@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Flight Sim Online</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=B612:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/client/style.css"></head><body>
+<canvas id="c"></canvas>
+<div id="hud">
+ <div id="hdgbox" class="p"><b id="hdg">000</b><small>°</small><em id="card">N</em></div>
+ <div id="modebox" class="p"><span id="cam">追従カメラ</span><small id="state">地上</small><small id="tacv" style="color:var(--ok)"></small></div>
+ <div id="basebox" class="p"><div><small>自軍基地</small><div class="hb"><i id="mybar"></i></div></div><div><small>敵軍基地</small><div class="hb r"><i id="enbar"></i></div></div></div>
+ <canvas id="mk"></canvas><div id="hit"></div><div id="warn"></div>
+ <div id="left" class="p">
+  <div class="gauge"><div class="bar"><i id="thrbar"></i></div><b id="thrv">0</b><small>スロットル%</small></div>
+  <div class="gauge"><div class="bar f"><i id="fuelbar"></i></div><b id="fuelv">100</b><small>燃料%</small></div>
+  <div class="gauge"><div class="bar h"><i id="hpbar"></i></div><b id="hpv2">100</b><small>機体HP%</small></div>
+ </div>
+ <div id="bottom">
+  <div class="p rd"><small>対気速度 kt</small><b id="ias">0</b><small>対地速度 kt</small><b id="gs" style="font-size:15px">0</b></div>
+  <canvas id="adi" width="160" height="160"></canvas>
+  <div class="p rd"><small>高度 ft</small><b id="alt">0</b><small>昇降率 fpm</small><b id="vs" style="font-size:15px">0</b></div>
+ </div>
+ <div id="right" class="p">
+  <span><i class="lamp" id="lgear"></i>ランディングギア</span><b id="gearv">DOWN</b>
+  <span>フラップ</span><b id="flapv">0°</b>
+  <span><i class="lamp" id="lbrake"></i>ブレーキ</span><b id="brakev">OFF</b>
+  <span>トリム</span><b id="trimv">+0.0</b>
+  <span>迎角</span><b id="aoav">0.0°</b>
+  <span>荷重</span><b id="gv">1.0 G</b>
+  <span>弾薬</span><b id="ammov">800</b>
+  <span>ミサイル</span><b id="mslv">6</b>
+  <span>チャフ</span><b id="chfv">5</b>
+  <span>味方 / 敵機数</span><b id="frv">4 / 0</b>
+  <span>機体</span><b id="hpv">--</b>
+  <span>得点</span><b id="scv">0</b>
+  <span>破壊 / 撃墜</span><b id="kv">0 / 0</b>
+ </div>
+ <div id="help" class="p"><kbd>W / S</kbd>ピッチ 下げ/上げ<br><kbd>A / D</kbd>ロール 左/右<br><kbd>Q / E</kbd>ラダー(地上は前輪操舵)<br><kbd>↑ ↓ / Shift</kbd>スロットル<br><kbd>Z / X</kbd>最大 / アイドル<br><kbd>F / V</kbd>フラップ 下げ/上げ<br><kbd>G</kbd>ギア  <kbd>Space</kbd>ブレーキ<br><kbd>[ ]</kbd>トリム  <kbd>C</kbd>カメラ<br><kbd>Shift+R</kbd>最初からやり直し <kbd>Shift+N</kbd>空中スタート(戦闘もリセット)<br><kbd>J / 右クリック</kbd>機銃発射<br><kbd>K</kbd>ミサイル(敵を照準に2秒でロック)<br><kbd>L</kbd>チャフ(5発・敵ミサイル対策)<br><kbd>ホイール</kbd>見回す <kbd>Alt+ホイール</kbd>上下 <kbd>T</kbd>視点リセット<br><kbd>P</kbd>一時停止 <kbd>M</kbd>音 <kbd>H</kbd>ヘルプ</div>
+</div>
+<div id="crash"><h2 id="crashh">墜落</h2><p id="crashmsg" style="margin:0;color:#c9d8e6"></p><small id="crashs">撃墜されても10秒後に自軍基地から再出撃します(戦闘状況は継続)</small></div>
+<div id="start">
+ <h1>フライトシミュレーター ONLINE</h1>
+ <p>2チーム(BLUE / RED)の空戦。敵基地を破壊したチームの勝利。AIが不足人数を補います。<br>W/S ピッチ・A/D ロール・Q/E ラダー・Shift/↑↓ スロットル・J/右クリック 機銃・K ミサイル・L チャフ・G ギア・F/V フラップ・Tab スコア・H ヘルプ</p>
+ <div id="joinbox"><input id="nameIn" maxlength="16" placeholder="パイロット名" autocomplete="off">
+  <select id="teamSel"><option value="auto">チーム: 自動</option><option value="blue">BLUE</option><option value="red">RED</option></select>
+  <button id="joinBtn">接続して参加</button></div>
+ <div id="lobbybox" style="display:none"><div id="plist"></div>
+  <div class="row"><button id="btnBlue" class="tb">BLUE に移る</button><button id="readyBtn">READY</button><button id="btnRed" class="tr">RED に移る</button></div>
+  <p id="lstate"></p></div>
+ <p id="lobbymsg"></p>
+</div>
+<div id="netmsg"></div><div id="netbox" class="p"></div><div id="feed"></div><div id="sb"></div></div>
+
+<script src="/vendor/three.min.js"></script>
+<script src="/config.js"></script>
+<script src="/shared/protocol.js"></script><script src="/shared/world.js"></script><script src="/shared/flight.js"></script>
+<script src="/client/js/net.js"></script><script src="/client/js/render.js"></script><script src="/client/js/game.js"></script>
+</body></html>
