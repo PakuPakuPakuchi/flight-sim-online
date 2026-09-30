@@ -243,9 +243,21 @@ class GameSimulation {
   }
 
   // ---- BLUE AI(元 allyStep / allyPick) ----
+  // 基地攻撃に回すか判定: 近くに敵機がいれば迎撃優先、敵がいなければ基地、数的有利/敵基地が弱いほど攻撃役が増える
+  baseRaid(team, a, fs, foeB) {
+    if (foeB.hp <= 0) return false;
+    if (!fs.length) return true;
+    for (const c of fs) if (c.p.distanceToSquared(a.p) < 400 * 400) return false;
+    const own = this.cr[team].filter(c => this.alive(c)).length, myB = this.teams[team].base;
+    let share = own > fs.length ? .5 : own === fs.length ? .34 : .2;
+    if (foeB.hp / foeB.max < .4) share += .25;
+    if (myB.hp / myB.max < .35) share -= .15;
+    return ((a.slot * .618) % 1) < clamp(share, 0, .9);
+  }
   pickA(a) {
     const tac = this.teams.blue.tac, foeB = this.teams.red.base, fs = this.cr.red.filter(c => this.alive(c));
     if (a.kam) return foeB;
+    if (this.baseRaid('blue', a, fs, foeB)) return foeB;
     if (tac === 1) { if (fs.length <= 1 && foeB.hp > 0) return foeB; return (a.tk && this.alive(a.tk)) ? a.tk : (a.tk = this.nearest(fs, a.p)); }
     if (tac === 2) { const b = this.ai.find(x => x.team === 'blue' && x !== a && x.slot === (a.slot ^ 1)); if (!b) return foeB.hp > 0 ? foeB : null; return this.nearest(fs, a.p.clone().add(b.p).multiplyScalar(.5)); }
     const c = new V3(), mine = this.ai.filter(x => x.team === 'blue'); for (const x of mine) c.add(x.p); c.divideScalar(mine.length || 1);
@@ -295,6 +307,7 @@ class GameSimulation {
   pickE(e) {
     const tac = this.teams.red.tac, blueB = this.teams.blue.base, fs = this.cr.blue.filter(c => this.alive(c));
     let best = null; e.tt = tac === 1 ? 2 : 1;
+    if (this.baseRaid('red', e, fs, blueB)) { e.tg = blueB; return; }
     if (tac === 1) { if (fs.length <= 1) best = blueB; else best = (e.tk && this.alive(e.tk)) ? e.tk : (e.tk = this.nearest(fs, e.p)); }
     else if (tac === 2) { const b = this.ai.find(x => x.team === 'red' && x !== e && x.slot === (e.slot ^ 1)); best = b ? this.nearest(fs, e.p.clone().add(b.p).multiplyScalar(.5)) : blueB; }
     else { const c = new V3(), mine = this.ai.filter(x => x.team === 'red'); for (const x of mine) c.add(x.p); c.divideScalar(mine.length || 1); best = this.nearest(fs, c); }
