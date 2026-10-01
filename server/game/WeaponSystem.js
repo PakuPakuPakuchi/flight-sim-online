@@ -32,7 +32,7 @@ class WeaponSystem {
     this.sim.event([0, b.id, r1(p.x), r1(p.y), r1(p.z), r1(v.x), r1(v.y), r1(v.z), this.ownerCode(owner)]);
   }
   // 弾のダメージ(元ゲーム準拠: 対人機/赤AI→3、味方AI→敵AIは1)
-  bulletDmg(target, owner) { return (target.human || (!owner.human && owner.team === 'red')) ? 3 : 1; }
+  bulletDmg() { return 3; } // 人間/AI共通
 
   stepBullets(dt) {
     const sim = this.sim, bs = this.bullets;
@@ -44,7 +44,7 @@ class WeaponSystem {
       if (o.human) for (const t of sim.targets) if (t.alive && hitSeg(old, b.p, t.p, t.r)) { sim.dmgTarget(t, o); hit = 0; break; }
       if (hit < 0) for (const c of sim.cr[foe]) {
         if (!sim.alive(c)) continue;
-        if (hitSeg(old, b.p, c.p, c.human ? 4.5 : 5)) { sim.damage(c, this.bulletDmg(c, o), o, 'gun'); hit = 0; break; }
+        if (hitSeg(old, b.p, c.p, 4.5)) { sim.damage(c, this.bulletDmg(c, o), o, 'gun'); hit = 0; break; }
       }
       if (hit < 0) { const base = sim.teams[foe].base; if (base.hp > 0 && hitSeg(old, b.p, base.p, base.r)) { sim.hitBase(base, 1, o); hit = 2; } }
       if (hit < 0 && b.p.y < Hg(b.p.x, b.p.z)) hit = 1;
@@ -84,7 +84,7 @@ class WeaponSystem {
     let end = m.life <= 0 || m.p.y < Hg(m.p.x, m.p.z);
     if (!end && m.dc && m.dc.life > 0 && hitSeg(old, m.p, m.dc.p, 30)) end = true;
     else if (!end) {
-      for (const c of sim.cr[foe]) if (sim.alive(c) && hitSeg(old, m.p, c.p, c.human ? 11 : 12)) { sim.damage(c, 40, o, 'missile'); end = true; break; }
+      for (const c of sim.cr[foe]) if (sim.alive(c) && hitSeg(old, m.p, c.p, 11)) { sim.damage(c, 40, o, 'missile'); end = true; break; }
       if (!end && hu) for (const t of sim.targets) if (t.alive && hitSeg(old, m.p, t.p, 12)) { t.hp = 1; sim.dmgTarget(t, o); end = true; break; }
       if (!end) { const base = sim.teams[foe].base; if (base.hp > 0 && hitSeg(old, m.p, base.p, base.r)) { sim.hitBase(base, 60, o); end = true; } }
     }

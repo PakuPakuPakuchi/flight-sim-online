@@ -17,6 +17,22 @@ const UP = new V3(0, 1, 0);
 const LOCK_RANGE = 1500, LOCK_TIME = 2;
 const ENEMY_AIM_SPREAD = .15, ENEMY_LEAD = .55;
 const ALLY_MAX = 15;
+const AI_HP = 60;       // AI機体HP(人間は100)。機銃ダメージは人間/AI共通の3
+const AI_CEIL = 1500;   // AIが飛ぶ高度の上限(海抜m)。超えると降下に転じる
+const AI_CRUISE = 70;   // AIの巡航速度目標(m/s)。この機体の推力で出せる実質上限に近い
+// 基地の対空砲(命中率は低め): 射程・上限高度・発射間隔・弾速・照準誤差(σ=sigma0+距離*sigmaK)・炸裂半径・ダメージ
+const AA = { range: 1800, maxAlt: 2400, interval: 2.6, shellV: 520, sigma0: 12, sigmaK: .04, burstR: 22, dmg: 9 };
+const AA_POS = [[-75, 70], [85, -45], [5, 100]]; // 基地中心からの砲の位置(x,z)
+const _gp = new V3();
+/** AI機。人間と同じ飛行状態 S を共有物理で更新し、操縦入力 inp (el/ai/thr...) だけで飛ぶ。 */
+class AIPilot {
+  constructor(o) { Object.assign(this, o); }
+  get p() { return this.S.pos; }
+  get f() { return new V3(0, 0, -1).applyQuaternion(this.S.q); }
+  get q() { return this.S.q; }
+  get spd() { return this.S.V; }
+  get alive() { return !this.dead; }
+}
 const rtac = () => { const r = Math.random(); return r < .1 ? 3 : r < .55 ? 1 : 2; };
 const foeOf = t => t === 'red' ? 'blue' : 'red';
 
@@ -28,8 +44,8 @@ class GameSimulation {
   }
   reset() {
     this.ai = []; this.targets = []; this.cr = { blue: [], red: [] };
-    this.weapons.reset(); this.events.length = 0;
-    const mk = (team, pos) => ({ isBase: true, team, p: new V3(pos.x, pos.y, pos.z), f: new V3(), spd: 0, r: World.BASE_R, hp: World.BASE_HP, max: World.BASE_HP });
+    this.weapons.reset(); this.events.length = 0; this.flak = [];
+    const mk = (team, pos) => ({ isBase: true, team, p: new V3(pos.x, pos.y, pos.z), f: new V3(), spd: 0, r: World.BASE_R, hp: World.BASE_HP, max: World.BASE_HP, aa: AA_POS.map(() => ({ cd: 2 + Math.random() * 2 })) });
     this.teams = {
       blue: { tac: rtac(), base: mk('blue', World.BLUE_BASE), re: [], spawnT: 0, name: 'BLUE' },
       red: { tac: rtac(), base: mk('red', World.RED_BASE), re: [], spawnT: 1.5, name: 'RED' }
@@ -41,7 +57,7 @@ class GameSimulation {
 
   // ---------- 共通ヘルパ ----------
   alive(c) { return c.isBase ? c.hp > 0 : c.human ? c.alive : !c.dead; }
-  vel(c, out) { return c.human ? out.copy(c.S.vel) : out.copy(c.f).multiplyScalar(c.spd); }
+  vel(c, out) { return c.S ? out.copy(c.S.vel) : out.copy(c.f).multiplyScalar(c.spd); }
   humans(team) { return this.room.playerList().filter(p => p.inGame && (!team || p.team === team)); }
   nearest(list, pt) { let b = null, bd = 1e15; for (const x of list) { const d = x.p.distanceToSquared(pt); if (d < bd) { bd = d; b = x; } } return b; }
   aiTargetCount(team) {
@@ -71,14 +87,21 @@ class GameSimulation {
   }
   spawnAI(team) {
     const red = team === 'red', slots = red ? 7 : ALLY_MAX;
-    const p = red ? new V3(EB.x + (Math.random() - .5) * 16, 10, EB.z - 700 + Math.random() * 200) : new V3((Math.random() - .5) * 16, 10, 100 - Math.random() * 150);
     const mine = this.ai.filter(a => a.team === team);
-    const a = {
-      id: this.room.nextId(), human: false, team, p, f: new V3(0, .08, red ? 1 : -1).normalize(), q: new Q(),
-      slot: Array.from({ length: slots }, (_, i) => i).find(i => !mine.some(x => x.slot === i)) ?? 0,
-      bank: 0, spd: red ? 58 + Math.random() * 10 : 60 + Math.random() * 8, hp: red ? 22 + this.wave * 2 : 35,
-      brk: 0, bs: 1, bt: 0, sh: 0, rest: red ? 1 + Math.random() * 2 : 1 + Math.random() * 2, age: 0, seed: Math.random() * 9, dead: false, name: team === 'red' ? 'RED-AI' : 'BLUE-AI'
-    };
+    const slot = Array.from({ length: slots }, (_, i) => i).find(i => !mine.some(x => x.slot === i)) ?? 0;
+    // 自軍滑走路の上空から離陸済みの状態で出撃(人間の空中スタートと同じ)
+    const S = Flight.newState(team, 0);
+    S.pos.set(((slot % 5) - 2) * 70 + (Math.random() - .5) * 20, 330 + (slot % 3) * 35 + Math.random() * 20,
+      red ? EB.z - 650 + Math.floor(slot / 5) * 120 : 150 - Math.floor(slot / 5) * 120);
+    S.onGround = false; S.gearS = 0; S.gearT = 0; S.thr = .7; S.V = 72;
+    S.vel.set(0, 0, -72).applyQuaternion(S.q);
+    const a = new AIPilot({
+      id: this.room.nextId(), human: false, team, S, slot,
+      inp: { el: 0, ai: 0, ru: 0, thr: .7, trim: .03, brake: false, flaps: 0, gear: 0, fire: false },
+      hp: AI_HP + (red ? Math.min(this.wave, 8) * 2 : 0), ammo: 800, fireT: 0, gunSide: 1, aimT: 0,
+      margin: .015 + Math.random() * .05, bank: 0, bt: 0, sh: 0, rest: 1 + Math.random() * 2, age: 0, seed: Math.random() * 9, dead: false, avoid: 0,
+      name: red ? 'RED-AI' : 'BLUE-AI'
+    });
     this.ai.push(a); return a;
   }
   spawnTargets() {
@@ -105,13 +128,14 @@ class GameSimulation {
     c.hp -= dmg;
     if (c.human) {
       c.lastHit = { by: owner, t: this.time }; this.room.send(c, { t: 'hit', dmg });
-      if (c.hp <= 0) { c.hp = 0; this.killHuman(c, '敵機に撃墜されました', owner, weapon); }
+      if (c.hp <= 0) { c.hp = 0; this.killHuman(c, weapon === 'flak' ? '敵基地の対空砲火に撃墜されました' : '敵機に撃墜されました', owner, weapon); }
     } else if (c.hp <= 0) this.killAI(c, owner, weapon);
   }
   credit(owner, victim, weapon) {
     this.killsTotal++;
     if (owner && owner.human) { owner.score += 500; owner.kills++; }
     if (owner) this.room.broadcast({ t: 'kill_feed', k: owner.name, kt: owner.team, v: victim.name, vt: victim.team, w: weapon || 'gun' });
+    else if (weapon === 'flak') this.room.broadcast({ t: 'kill_feed', k: '対空砲', kt: foeOf(victim.team), v: victim.name, vt: victim.team, w: 'flak' });
   }
   killAI(a, owner, weapon, noCredit) {
     if (a.dead) return;
@@ -147,6 +171,17 @@ class GameSimulation {
       const msg = Flight.physics(p.S, dt);
       if (msg) this.killHuman(p, msg, null, 'crash');
     }
+    for (const a of this.ai.slice()) {
+      if (a.dead) continue;
+      Flight.applyInput(a.S, a.inp, dt);
+      a.S.fuel = 1; // AIは燃料切れなし
+      const msg = Flight.physics(a.S, dt);
+      if (msg) {
+        const fb = this.teams[foeOf(a.team)].base;
+        if (a.kam && a.S.pos.distanceTo(fb.p) < fb.r * 1.3) { this.boom(a.S.pos, 22); this.hitBase(fb, 60, a); }
+        this.killAI(a, null, null, true);
+      }
+    }
   }
 
   // ---------- 戦闘ステップ(元 combatStep) ----------
@@ -156,6 +191,7 @@ class GameSimulation {
     this.rebuildLists();
     for (const p of this.room.playerList()) if (p.inGame) { this.fire(p, dt); this.respawnStep(p, dt); this.lockStep(p, dt); this.baseHeal(p, dt); }
     this.weapons.step(dt);
+    this.baseAA(dt);
     // AI 補充
     for (const team of ['blue', 'red']) {
       const tm = this.teams[team]; tm.spawnT -= dt;
@@ -227,19 +263,108 @@ class GameSimulation {
   }
 
   // ---------- AI 共通 ----------
-  fly(o, d, rate, dt) {
-    const ang = Math.acos(clamp(o.f.dot(d), -1, 1)), old = o.f.clone();
-    if (ang > 1e-4) o.f.applyAxisAngle(new V3().crossVectors(o.f, d).normalize(), Math.min(ang, rate * dt));
-    if (Math.abs(o.f.y) > .85) { o.f.y = Math.sign(o.f.y) * .85; o.f.normalize(); }
-    o.bank += (clamp(-new V3().crossVectors(old, o.f).y / dt * 1.8, -1.2, 1.2) - o.bank) * Math.min(1, dt * 3);
-    o.p.addScaledVector(o.f, o.spd * (o.kam ? 1.25 : 1) * dt);
-    const r0 = new V3().crossVectors(o.f, UP).normalize(), u0 = new V3().crossVectors(r0, o.f);
-    o.q.setFromRotationMatrix(new M4().makeBasis(r0, u0, o.f.clone().negate())).multiply(new Q().setFromAxisAngle(new V3(0, 0, -1), o.bank));
+  // 「進みたい方向 d」を人間と同じ操縦入力(エレベーター/エルロン/スロットル)に変換する。
+  // 機体は共有物理(失速・エネルギー損失・推力限界)で飛ぶので、人間と同条件。
+  pilot(a, d, dt) {
+    const S = a.S, inp = a.inp, kam = !!a.kam, f = a.f, V = Math.max(S.V, 1);
+    const agl = S.pos.y - Hg(S.pos.x, S.pos.z), dd = d.clone();
+    let low = false;
+    if (!kam) {
+      if (S.pos.y > AI_CEIL - 300) dd.y = Math.min(dd.y, -clamp((S.pos.y - (AI_CEIL - 300)) / 600, 0, 1) * .25); // 高度上限
+      dd.y += clamp((420 - S.pos.y) / 1500, -.05, .08);                     // 巡航高度(約420m)へ緩やかに戻る
+      if (!a.avoid) dd.y = Math.min(dd.y, clamp((V - 52) / 80, 0, .2));   // 上昇は余剰速度の範囲内だけ
+      if (V < 48) dd.y = Math.min(dd.y, -.08);                              // 速度が落ちたら機首を下げて加速
+      if (V > 125) dd.y = Math.max(dd.y, 0);
+      dd.y = Math.max(dd.y, -.55);
+      const ahead = agl + dd.y * V * 2.5;
+      if (a.avoid) { dd.y = Math.max(dd.y, .28); low = true; }
+      else if (ahead < 110) { dd.y = Math.max(dd.y, clamp((110 - agl) / (V * 2.5), 0, .3)); low = agl < 160; }
+    }
+    dd.normalize();
+    // --- ロール(バンク)制御: 水平方向の偏差に応じてバンクを取る ---
+    const theta = Math.asin(clamp(f.y, -1, 1)), fh = Math.hypot(f.x, f.z), dh = Math.hypot(dd.x, dd.z);
+    let psi = 0;
+    if (fh > .2 && dh > .05) psi = Math.atan2(-(f.z * dd.x - f.x * dd.z) / (fh * dh), (f.x * dd.x + f.z * dd.z) / (fh * dh));
+    let lim = clamp(.5 + (V - 45) * .04, .5, 1.25); if (low) lim = Math.min(lim, .45);
+    const aiming = a.aiming; a.aiming = false; // 射撃照準中は機首そのものを追い込む(人間が照準器を合わせる操作)
+    const phiT = clamp(psi * (aiming ? 3 : 1.5), -lim, lim);
+    const r = new V3(1, 0, 0).applyQuaternion(S.q), u = new V3(0, 1, 0).applyQuaternion(S.q), phi = Math.atan2(-r.y, u.y);
+    inp.ai = clamp((phiT - phi) * 2.2, -1, 1);
+    // --- ピッチ制御: 必要荷重倍数 → 迎角 → エレベーター。迎角は失速手前で頭打ち ---
+    const gam = Math.asin(clamp(dd.y, -1, 1));
+    const fp = Math.asin(clamp(S.vel.y / V, -1, 1)); // 実際の飛行経路角(機首角ではなく経路で高度を保つ)
+    let n = Math.cos(fp) / Math.max(.45, Math.cos(phi)) + (aiming ? 6 * (gam - theta) - 1.6 * S.w.x : 3.5 * (gam - fp) - 1.2 * S.w.x);
+    if (Math.abs(phi) > 1.45) n = Math.min(n, .8);
+    n = clamp(n, -1, 4);
+    const rho = 1.225 * Math.exp(-Math.max(0, S.pos.y) / 8500), qd = .5 * rho * V * V;
+    const aS = Flight.STALL_A0 + .02 * S.flaps;
+    const alpha = clamp((n * 1100 * 9.81 / (qd * 16) - .25 - .5 * S.flaps) / 5.2, -.2, aS - a.margin);
+    inp.el = clamp(alpha / .714 - inp.trim, -1, 1);
+    // 照準中は小さな横ずれをラダーで微調整
+    let ru = 0;
+    if (aiming) { const dl = dd.clone().applyQuaternion(S.q.clone().invert()); ru = clamp(Math.atan2(dl.x, -dl.z) * 4, -1, 1); }
+    inp.ru = ru;
+    inp.thr = kam || V < 60 || a.avoid ? 1 : clamp(.6 + (AI_CRUISE + 2 - V) * .08, .45, 1);
+    inp.gear = 0; inp.flaps = 0; inp.brake = false;
   }
   terrainAvoid(a, d) {
     const ah = a.p.clone().addScaledVector(a.f, a.spd * 4);
-    if (!a.kam && (a.p.y < Hg(a.p.x, a.p.z) + 120 || ah.y < Hg(ah.x, ah.z) + 80)) d.set(a.f.x, .7, a.f.z).normalize();
-    if (a.p.y > 2500) d.y = Math.min(d.y, -.2);
+    a.avoid = 0;
+    if (!a.kam && (a.p.y < Hg(a.p.x, a.p.z) + 120 || ah.y < Hg(ah.x, ah.z) + 80)) { d.set(a.f.x, .7, a.f.z).normalize(); a.avoid = 1; }
+  }
+  // 機銃の偏差射撃方向(弾は自機速度を引き継ぎ、重力で落ちる = 人間の機銃と同じ弾道)
+  aimDir(a, tg) {
+    const vrel = this.vel(tg, new V3()).sub(a.S.vel); let dist = tg.p.distanceTo(a.p), aim = new V3();
+    for (let k = 0; k < 2; k++) { const t = dist / 560; aim.copy(tg.p).addScaledVector(vrel, t); aim.y += .5 * 9.81 * t * t; aim.sub(a.p); dist = aim.length(); }
+    return aim.normalize();
+  }
+  // 近距離では偏差射撃点へ機首を向ける。人間同様の照準ブレを加える
+  leadDir(a, tg, d, dist) {
+    if (a.kam || dist < 140 || dist > 650) return d;
+    a.aiming = true;
+    const aim = this.aimDir(a, tg), j = .025;
+    aim.x += Math.sin(a.age * 1.3 + a.seed) * j; aim.y += Math.sin(a.age * 1.9 + a.seed * 2) * j; aim.z += Math.sin(a.age * 1.1 + a.seed * 3) * j;
+    return aim.normalize();
+  }
+  // 引き金: 機首が射撃点に十分合ってから(反応遅れ .25s)バーストで撃つ。機銃自体は人間と同じ fire()
+  aiTrigger(a, tg, dt) {
+    const inp = a.inp; inp.fire = false;
+    if (tg && !a.kam) {
+      a.rest -= dt;
+      const dist = tg.p.distanceTo(a.p);
+      if (a.rest <= 0 && dist > 50 && dist < 650) {
+        const err = Math.acos(clamp(a.f.dot(this.aimDir(a, tg)), -1, 1));
+        a.aimT = err < .022 ? a.aimT + dt : 0;
+        if (a.aimT > .25) { inp.fire = true; a.bt += dt; if (a.bt > .9) { a.bt = 0; a.aimT = 0; a.rest = 1 + Math.random() * 1.5; } }
+      } else a.aimT = 0;
+    }
+    if (a.ammo < 100) a.ammo = 800;
+    this.fire(a, dt);
+  }
+  // 基地の対空砲: 低命中率の炸裂弾(照準誤差大・撃つ間隔長め)。基地が生きている間だけ作動
+  baseAA(dt) {
+    for (const team of ['blue', 'red']) {
+      const base = this.teams[team].base; if (base.hp <= 0) continue;
+      const foes = this.cr[foeOf(team)];
+      base.aa.forEach((g, i) => {
+        g.cd -= dt; if (g.cd > 0) return;
+        const gp = _gp.set(base.p.x + AA_POS[i][0], base.p.y + 4, base.p.z + AA_POS[i][1]);
+        let best = null, bd = AA.range * AA.range;
+        for (const c of foes) { if (!this.alive(c)) continue; const d2 = c.p.distanceToSquared(gp); if (d2 < bd && c.p.y < AA.maxAlt && c.p.y - Hg(c.p.x, c.p.z) > 25) { bd = d2; best = c; } }
+        if (!best) { g.cd = .25; return; }
+        g.cd = AA.interval * (.8 + Math.random() * .4);
+        const dist = Math.sqrt(bd), t = dist / AA.shellV, sg = AA.sigma0 + dist * AA.sigmaK;
+        const nz = () => (Math.random() + Math.random() + Math.random() - 1.5) * 2 * sg;
+        const bp = best.p.clone().addScaledVector(this.vel(best, new V3()), t); bp.x += nz(); bp.y += nz(); bp.z += nz();
+        this.flak.push({ t, p: bp, team });
+        this.event([5, r1(gp.x), r1(gp.y + 2), r1(gp.z)]);
+      });
+    }
+    for (let i = this.flak.length - 1; i >= 0; i--) {
+      const sh = this.flak[i]; sh.t -= dt; if (sh.t > 0) continue;
+      this.flak.splice(i, 1); this.boom(sh.p, 8);
+      for (const c of this.cr[foeOf(sh.team)]) if (this.alive(c) && c.p.distanceToSquared(sh.p) < AA.burstR * AA.burstR) this.damage(c, AA.dmg, null, 'flak');
+    }
   }
 
   // ---- BLUE AI(元 allyStep / allyPick) ----
@@ -265,13 +390,16 @@ class GameSimulation {
   }
   stepA(a, dt) {
     a.age += dt; const tac = this.teams.blue.tac, foeB = this.teams.red.base;
-    if (!a.kam && tac === 3 && a.hp < 10) a.kam = true;
+    if (!a.kam && tac === 3 && a.hp < 15) a.kam = true;
     const tg = this.pickA(a); let d;
     if (tg) {
       d = tg.p.clone().sub(a.p); const dist = Math.max(d.length(), 1); d.divideScalar(dist);
       if (tac === 1) { a.ex = (a.ex || 0) - dt; if (tg !== foeB && dist < 150) a.ex = 2.5; }
       if (!a.kam && (dist < 120 || (tac === 1 && a.ex > 0 && tg !== foeB))) d = a.f.clone().add(new V3(0, .25, 0)).normalize();
-      else if (tac === 2 && tg !== foeB && dist > 200) d.add(new V3().crossVectors(UP, d).normalize().multiplyScalar(((a.slot & 1) ? 1 : -1) * .3)).normalize();
+      else {
+        if (tac === 2 && tg !== foeB && dist > 200) d.add(new V3().crossVectors(UP, d).normalize().multiplyScalar(((a.slot & 1) ? 1 : -1) * .3)).normalize();
+        if (!a.kam) d = this.leadDir(a, tg, d, dist);
+      }
     } else {
       const lead = this.humans('blue').filter(p => p.alive)[0];
       let tp;
@@ -280,27 +408,11 @@ class GameSimulation {
       tp.y = Math.max(tp.y, Hg(tp.x, tp.z) + 300); d = tp.sub(a.p); d = d.length() > 80 ? d.normalize() : a.f.clone();
     }
     this.terrainAvoid(a, d);
-    this.fly(a, d, a.kam ? 1.8 : 1, dt);
+    this.pilot(a, d, dt);
     if (a.kam && (a.p.distanceTo(foeB.p) < 45 || a.p.y < Hg(a.p.x, a.p.z) + 3)) {
       this.boom(a.p, 22); if (a.p.distanceTo(foeB.p) < foeB.r * 1.3) this.hitBase(foeB, 60, a); this.killAI(a, null, null, true); return;
     }
-    a.rest -= dt;
-    if (tg && !a.kam && a.rest <= 0) {
-      a.bt += dt;
-      if (a.bt > 1) { a.bt = 0; a.rest = 1 + Math.random() * 1.5; }
-      else {
-        const to = tg.p.clone().sub(a.p), dist = to.length(), dir = to.divideScalar(dist);
-        if (dist < 700 && dist > 60 && a.f.dot(dir) > .985) {
-          a.sh -= dt;
-          if (a.sh <= 0) {
-            a.sh = .09; const tv = this.vel(tg, new V3());
-            const aim = tg.p.clone().addScaledVector(tv, dist / 520 * .8).sub(a.p).normalize();
-            aim.x += (Math.random() - .5) * .04; aim.y += (Math.random() - .5) * .04; aim.z += (Math.random() - .5) * .04; aim.normalize();
-            this.weapons.spawnBullet(a, a.p.clone().addScaledVector(a.f, 4), aim.multiplyScalar(520));
-          }
-        }
-      }
-    }
+    this.aiTrigger(a, tg, dt);
   }
 
   // ---- RED AI(元 enemyStep / pickTgt / enemyMissile) ----
@@ -316,7 +428,7 @@ class GameSimulation {
   stepE(e, dt) {
     e.age += dt; e.tt = (e.tt || 0) - dt;
     const tac = this.teams.red.tac, blueB = this.teams.blue.base;
-    if (!e.kam && e.hp < 10 && tac === 3) { e.kam = true; e.tg = blueB; }
+    if (!e.kam && e.hp < 15 && tac === 3) { e.kam = true; e.tg = blueB; }
     if (!e.kam && (!e.tg || e.tt <= 0 || (!e.tg.isBase && !this.alive(e.tg)))) this.pickE(e);
     const tg = e.tg, tv = this.vel(tg, new V3()), pf = tg.human ? tg.f : tg.f;
     const toP = tg.p.clone().sub(e.p), dist = Math.max(toP.length(), 1), dirP = toP.clone().divideScalar(dist);
@@ -326,9 +438,9 @@ class GameSimulation {
     if (tac === 2 && tg !== blueB && dist > 200) d.add(new V3().crossVectors(UP, dirP).normalize().multiplyScalar(((e.slot & 1) ? 1 : -1) * .3)).normalize();
     if (e.brk > 0) d = new V3().crossVectors(e.f, UP).multiplyScalar(e.bs).add(new V3(0, -.35, 0)).normalize();
     else if (!e.kam && (dist < 140 || (tac === 1 && e.ex > 0 && tg !== blueB))) d = e.f.clone().add(new V3(0, .25, 0)).normalize();
-    else { d.y += Math.sin(e.age * .5 + e.seed) * .08; d.normalize(); }
+    else { d.y += Math.sin(e.age * .5 + e.seed) * .08; d.normalize(); if (!e.kam) d = this.leadDir(e, tg, d, dist); }
     this.terrainAvoid(e, d);
-    this.fly(e, d, (.8 + Math.min(this.wave, 6) * .05) * (e.kam ? 1.8 : 1), dt);
+    this.pilot(e, d, dt);
     if (e.kam && (dist < 45 || e.p.y < Hg(e.p.x, e.p.z) + 3)) {
       this.boom(e.p, 22); if (e.p.distanceTo(blueB.p) < blueB.r * 1.3) this.hitBase(blueB, 60, e); this.killAI(e, null, null, true); return;
     }
@@ -338,19 +450,7 @@ class GameSimulation {
       return;
     }
     if (!e.kam) this.enemyMissile(e, dist, dirP, dt);
-    e.rest -= dt;
-    if (e.rest <= 0 && !e.kam) {
-      e.bt += dt;
-      if (e.bt > 1) { e.bt = 0; e.rest = 1.5 + Math.random() * 2; }
-      else if (dist < 700 && dist > 60 && e.f.dot(dirP) > .985) {
-        e.sh -= dt;
-        if (e.sh <= 0) {
-          e.sh = .09; const aim = tg.p.clone().addScaledVector(tv, dist / 520 * ENEMY_LEAD).sub(e.p).normalize();
-          aim.x += (Math.random() - .5) * ENEMY_AIM_SPREAD; aim.y += (Math.random() - .5) * ENEMY_AIM_SPREAD; aim.z += (Math.random() - .5) * ENEMY_AIM_SPREAD; aim.normalize();
-          this.weapons.spawnBullet(e, e.p.clone().addScaledVector(e.f, 4), aim.multiplyScalar(520));
-        }
-      }
-    }
+    this.aiTrigger(e, tg, dt);
   }
   enemyMissile(e, dist, dirP, dt) {
     e.mc = (e.mc === undefined ? 8 + Math.random() * 10 : e.mc) - dt;
@@ -364,7 +464,7 @@ class GameSimulation {
   craftEntries() {
     const out = [];
     const push = (c, human) => {
-      const q = human ? c.S.q : c.q, p = c.p;
+      const q = c.S ? c.S.q : c.q, p = c.p;
       out.push([c.id, c.team === 'red' ? 1 : 0, human ? 1 : 0, r1(p.x), r1(p.y), r1(p.z), r4(q.x), r4(q.y), r4(q.z), r4(q.w), Math.round(c.hp), human ? Math.round(c.S.thr * 100) : 0, human ? Math.round(c.S.gearT * 100) : 0, c.kam ? 1 : 0]);
     };
     for (const p of this.room.playerList()) if (p.alive) push(p, true);
